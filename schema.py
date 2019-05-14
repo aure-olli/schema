@@ -11,7 +11,7 @@ except ImportError:
     from contextlib2 import ExitStack
 
 try: basestring
-except: basestring = str
+except NameError: basestring = str
 
 __version__ = '0.8.0'
 __all__ = [
@@ -263,7 +263,6 @@ class BaseSchema(object):
         return schema_dict
 
 
-
 @schema_class('and')
 class And(BaseSchema):
     """
@@ -314,7 +313,7 @@ class And(BaseSchema):
         types = {} # all the types met
         notAnyOf = [] # all not
         false = False # if nothing is matched
-        # to call on every sub scehma
+        # to call on every sub schema
         def aux(schema):
             nonlocal false
             if schema is None or schema == {} or schema is True:
@@ -445,7 +444,7 @@ class Or(BaseSchema):
         types = set() # the matchable types
         # cannot add bool directly to enum, else they'll merge with 1 and 0
         true, false, null, empty = False, False, False, False
-        # to call on every sub scehma
+        # to call on every sub schema
         def aux(schema):
             nonlocal true, false, null, empty
             if schema is None or schema is False:
@@ -456,10 +455,12 @@ class Or(BaseSchema):
             keys = set(schema)
             if schema.get('nullable', False):
                 null = True
+                if schema == {'nullable': True, 'not': True}: return
                 keys.remove('nullable')
                 schema = {k: schema[k] for k in keys}
             # a const or enum, append it to enum
-            if keys == {'const'} or keys == {'enum'}:
+            if keys == {'const'} or keys == {'enum'} or \
+                keys == {'const', 'type'} or keys == {'enum', 'type'}:
                 for const in schema.get('enum', (schema.get('const'),)):
                     if const is True: true = True
                     elif const is False: false = True
@@ -501,12 +502,11 @@ class Or(BaseSchema):
                 if null: enum.append(None)
         elif target == 'openapi':
             # no enum, better add them to types
-            if true and false and not enum:
+            if true and false:
                 types.add('boolean')
             # add them to enum
-            else:
-                if true: enum.append(True)
-                if false: enum.append(False)
+            elif true: anyOf.append(dict(type='boolean', enum=[True]))
+            elif false: anyOf.append(dict(type='boolean', enum=[False]))
         else:
             # no enum, better add boolean to types
             if true and false and not null and not enum:
@@ -523,13 +523,29 @@ class Or(BaseSchema):
             if len(enum) == 1:
                 anyOf.append(dict(const=enum[0]))
             elif enum: anyOf.append(dict(enum=enum))
+        elif target == 'openapi':
+            anyOf.extend(dict(type=t) for t in sorted(types))
+            strenums = []
+            numenums = []
+            isint = True
+            for const in enum:
+                if isinstance(const, basestring):
+                    strenums.append(const)
+                elif isinstance(const, int):
+                    numenums.append(const)
+                elif isinstance(const, float):
+                    numenums.append(const)
+                    isint = False
+            if strenums: anyOf.append(dict(type='string', enum=strenums))
+            if numenums: anyOf.append(dict(
+                type='integer' if isint else 'number', enum=numenums))
         else:
-            if types: anyOf.extend(dict(type=t) for t in sorted(types))
+            anyOf.extend(dict(type=t) for t in sorted(types))
             if enum: anyOf.append(dict(enum=enum))
 
         # add null as nullable
         if target == 'openapi' and null:
-            if not anyOf: return dict(enum=[None])
+            if not anyOf: return {'nullable': True, 'not': True}
             if len(anyOf) == 1: return dict(anyOf[0], nullable=True)
             else: return dict(anyOf=anyOf, nullable=True)
         else:
@@ -839,7 +855,7 @@ class Dict(BaseSchema):
 
         return new
 
-    def json_schema(self, schema_id=None, **kwargs):
+    def json_schema(self, schema_id=None, target=None, **kwargs):
         """
         Generates a JSON schema for this object.
         Creates a 'properties' field for comparable keys.
@@ -856,33 +872,39 @@ class Dict(BaseSchema):
         requiredProps = set() # for required
 
         for key, schema in self._all_keys:
-            key_dict = key.json_schema(**kwargs)
-            schema = schema.json_schema(**kwargs)
+            key_dict = key.json_schema(target=target, **kwargs)
+            schema = schema.json_schema(target=target, **kwargs)
             if schema is None or schema is False: continue
             required = getattr(key, 'required', True)
             # let _json_schema_key put the right key at the right place
             self._json_schema_key(key, key_dict, schema, required,
-                props, patternProps, addProps, requiredProps, **kwargs)
+                props, patternProps, addProps, requiredProps,
+                target=target, **kwargs)
         # create the JSON schema
         schema_dict = dict(type='object')
         if requiredProps: schema_dict['required'] = sorted(requiredProps)
         # create properties
         properties = {}
         for const, items in props.items():
-            schema = self._json_schema_values(items, **kwargs)
+            schema = self._json_schema_values(items, target=target, **kwargs)
             if schema is not False: properties[const] = schema
         if properties: schema_dict['properties'] = properties
+        # open API does not have patternProperties
+        if target == 'openapi':
+            for items in patternProps.values():
+                addProps.extend(items)
         # create patternProperties
-        properties = {}
-        for regex, items in patternProps.items():
-            schema = self._json_schema_values(items, **kwargs)
-            if schema is not False: properties[regex] = schema
-        if properties: schema_dict['patternProperties'] = properties
+        else:
+            properties = {}
+            for regex, items in patternProps.items():
+                schema = self._json_schema_values(items, target=target, **kwargs)
+                if schema is not False: properties[regex] = schema
+            if properties: schema_dict['patternProperties'] = properties
         # create additionalProperties
         if self._ignore_extra_keys:
             schema_dict['additionalProperties'] = True
         else:
-            schema = self._json_schema_values(addProps, **kwargs)
+            schema = self._json_schema_values(addProps, target=target, **kwargs)
             schema_dict['additionalProperties'] = schema
         # create minProperties and maxProperties
         if self._min_length:
@@ -907,7 +929,23 @@ class Dict(BaseSchema):
         # a {'type': ...} schema
         # most other fields are ignored in this case
         # goes either in addProps, either in patternProps
-        if 'type' in json_schema:
+        # a {'const': ...} or {'enum': ...} schema, goes to props
+        if keys == {'const'} or keys == {'enum'} or \
+            keys == {'const', 'type'} or keys == {'enum', 'type'}:
+            enum = json_schema.get('enum', (json_schema.get('const'),))
+            for const in enum:
+                # bool and int are nicely converted to string
+                if isinstance(const, bool):
+                    const = 'true' if const else 'false'
+                elif isinstance(const, int): const = str(const)
+                # rest is ignored
+                elif not isinstance(const, basestring):
+                    # raise TypeError('key %r is not a valid JSON schema key' % const)
+                    return
+                props.setdefault(const, []).append((key, schema))
+                if required and len(enum) == 1: requiredProps.add(const)
+        # else:
+        elif 'type' in json_schema:
             type_ = json_schema['type']
             # type is a list, recursive call, but without required
             if not isinstance(type_, basestring):
@@ -946,21 +984,6 @@ class Dict(BaseSchema):
             for item in json_schema['anyOf']:
                 self._json_schema_key(key, item, schema, False,
                     props, patternProps, addProps, requiredProps, **kwargs)
-        # a {'const': ...} or {'enum': ...} schema, goes to props
-        elif keys == {'const'} or keys == {'enum'}:
-            enum = json_schema.get('enum', (json_schema.get('const'),))
-            for const in enum:
-                # bool and int are nicely converted to string
-                if isinstance(const, bool):
-                    const = 'true' if const else 'false'
-                elif isinstance(const, int): const = str(const)
-                # rest is ignored
-                elif not isinstance(const, basestring):
-                    # raise TypeError('key %r is not a valid JSON schema key' % const)
-                    return
-                props.setdefault(const, []).append((key, schema))
-                if required and len(enum) == 1: requiredProps.add(const)
-        # else:
         #     raise TypeError('key %r cannot be converted to JSON schema' % key)
 
     def _json_schema_values(self, items, **kwargs):
@@ -1188,6 +1211,16 @@ class Schema(BaseSchema):
         elif flavor == COMPARABLE:
             if target == 'json_schema':
                 schema_dict = dict(const=schema)
+            elif target == 'openapi':
+                if schema is None: return {'nullable': True, 'not': True}
+                elif isinstance(schema, bool):
+                    schema_dict = dict(type='boolean', enum=[schema])
+                elif isinstance(schema, int):
+                    schema_dict = dict(type='integer', enum=[schema])
+                elif isinstance(schema, float):
+                    schema_dict = dict(type='number', enum=[schema])
+                elif isinstance(schema, basestring):
+                    schema_dict = dict(type='string', enum=[schema])
             else: schema_dict = dict(enum=[schema])
         # the rest is ignored
         return self._json_schema_aux(schema_id, schema_dict)

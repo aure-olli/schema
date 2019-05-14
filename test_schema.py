@@ -922,7 +922,7 @@ def test_json_schema_arg():
     s = Schema(None, json_schema={'a': 'b'})
     assert s.json_schema() == {'a': 'b'}
     s = Schema(None, json_schema=True)
-    assert s.json_schema() == True
+    assert s.json_schema() is True
 
 
 def test_json_schema_const():
@@ -1019,9 +1019,12 @@ def test_json_schema_or_merge_bool_null():
     assert s.json_schema(target='openapi') == {'type': 'boolean', 'nullable': True}
     s = Or(0, 1, 2, 3, bool)
     assert s.json_schema() == {'enum': [0, 1, 2, 3, True, False]}
-    assert s.json_schema(target='openapi') == {'enum': [0, 1, 2, 3, True, False]}
+    assert s.json_schema(target='openapi') == {'anyOf': [
+        {'type': 'boolean'},
+        {'type': 'integer', 'enum': [0, 1, 2, 3]},
+    ]}
     s = Or(None)
-    assert s.json_schema(target='openapi') == {'enum': [None]}
+    assert s.json_schema(target='openapi') == {'nullable': True, 'not': True}
 
 
 def test_json_schema_regex():
