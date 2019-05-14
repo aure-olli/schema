@@ -84,7 +84,7 @@ otherwise it will raise ``SchemaError``.
     >>> Schema(object).validate('hai')
     'hai'
 
-``object`` will logically match anything. ``Any()`` can be used similarly
+``object`` will logically match anything. ``Any()`` can be used similarly.
 
 Callables
 ~~~~~~~~~
@@ -286,7 +286,7 @@ Beware that any non ``Optional`` key is required: If you specify types, **schema
     False
 
 To do that, you need ``Schema({Optional(int):int})``. This is differents for lists
-lists, where ``Schema([int]).is_valid([])`` will return True.
+lists, where ``Schema([int]).is_valid([])`` will return ``True``.
 
 You can mark a key as clean, meaning its value will be discarded:
 
@@ -307,6 +307,8 @@ You can mark a key as clean, meaning its value will be discarded:
     {'key1': 3}
 
 Avoid using ``Clean`` with required keys:
+
+.. code:: python
 
     >>> from schema import Clean
     >>> Schema({Clean('name'): None,
@@ -363,7 +365,7 @@ Hooks
 ~~~~~~~~~~
 You can define hooks to have specific behavior when validating key:value.
 We have already seen ``Optional`` and ``Clean`` hooks.
-The `Forbidden` class is another example of this.
+The ``Forbidden`` class is another example of this.
 
 You can mark a key as forbidden as follows:
 
@@ -423,8 +425,8 @@ You can also inherit the ``Hook`` class. Here's an example where a `Deprecated` 
 
 Hooks have much more possibilities:
 
-- ``handle(self, key, value, new, data)``: Called when the key and the value matches. Takes the transformed key, the transformed value, the new dict being built, and the data being validated. It can edit ``new``, and return ``None`` to continue matching the key with other schemas, ``True`` to add the key and the value to ``new``, and ``False`` to discard the key.
-- ``handle(self, key, value, new, data)``: Called when the key matches but not the value. Takes the transformed key, the error raised, the new dict being built, and the data being validated. It can edit ``new``, and return ``None`` to continue matching the key with other schemas, ``True`` to add to raise the ``error``, and ``False`` to discard the key.
+- ``handle(self, key, value, new, data)``: Called when the key and the value match. Takes the transformed key, the transformed value, the new dict being built, and the data being validated. It can edit ``new``, and return ``None`` to continue matching the key with other schemas, ``True`` to add the key and the value to ``new``, and ``False`` to discard the key.
+- ``handle(self, key, value, new, data)``: Called when the key matches but not the value. Takes the transformed key, the error raised, the new dict being built, and the data being validated. It can edit ``new``, and return ``None`` to continue matching the key with other schemas, ``True`` to raise the ``error``, and ``False`` to discard the key.
 - ``priority``: The priority of this key, lowest number is called first. You can use ``COMPARABLE``, ``CALLABLE``, ``VALIDATOR``, ``TYPE``, ``DICT`` and ``ITERABLE`` constants. It can be a function.
 - ``required``: If the key is required, default to ``False``,
 - ``default``: The default value if the key hasn't been met, can be a function.
@@ -548,7 +550,7 @@ converted ``'3'`` to ``int``.
 
 You can also generate standard `draft-07 JSON schema <https://json-schema.org/>`_
 or `Open API schema <https://swagger.io/specification/#schemaObject>`_
-from a `Schema`.
+from a ``Schema``.
 
 .. code:: python
 
@@ -600,6 +602,8 @@ By default, JSON schema and Open API cross-compatible schemas are generated. How
  'nullable': True}
 
 It is possible to precise the JSON schema of any `Schema`:
+
+.. code:: python
 
     >>> from schema import And, Use
     >>> s = And(str, Use(lambda x: len(x) <= 10,
