@@ -84,6 +84,8 @@ otherwise it will raise ``SchemaError``.
     >>> Schema(object).validate('hai')
     'hai'
 
+``object`` will logically match anything. ``Any()`` can be used similarly
+
 Callables
 ~~~~~~~~~
 
@@ -134,7 +136,7 @@ compiled regex ``SRE_Pattern``):
     >>> Regex(r'^[A-Z]+$', flags=re.I).validate('those-dashes-dont-match')
     Traceback (most recent call last):
     ...
-    SchemaError: Regex('^[A-Z]+$', flags=re.IGNORECASE) does not match 'those-dashes-dont-match'
+    SchemaError: Regex(re.compile('^[A-Z]+$', re.IGNORECASE)) does not match 'those-dashes-dont-match'
 
 For a more general case, you can use ``Use`` for creating such objects.
 ``Use`` helps to use a function or type to convert a value while validating it:
@@ -187,8 +189,8 @@ Lists, similar containers
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If ``Schema(...)`` encounters an instance of ``list``, ``tuple``, ``set`` or
-``frozenset``, it will validate contents of corresponding data container
-against schemas listed inside that container:
+``frozenset``, it will us ``List`` to validate contents of corresponding data
+container against schemas listed inside that container:
 
 
 .. code:: python
@@ -199,13 +201,13 @@ against schemas listed inside that container:
     >>> Schema((int, float)).validate((5, 7, 8, 'not int or float here'))
     Traceback (most recent call last):
     ...
-    SchemaError: Or(<type 'int'>, <type 'float'>) did not validate 'not int or float here'
+    SchemaError: Or(Schema(<type 'int'>), Schema(<type 'float'>)) did not validate 'not int or float here'
     'not int or float here' should be instance of 'float'
 
 Dictionaries
 ~~~~~~~~~~~~
 
-If ``Schema(...)`` encounters an instance of ``dict``, it will validate data
+If ``Schema(...)`` encounters an instance of ``dict``, it will use ``Dict`` validate data
 key-value pairs:
 
 .. code:: python
@@ -276,19 +278,48 @@ default can also be a callable:
     >>> Schema({Optional('data', default=dict): {}}).validate({}) == {'data': {}}
     True
 
-Also, a caveat: If you specify types, **schema** won't validate the empty dict:
+Beware that any non ``Optional`` key is required: If you specify types, **schema** won't validate the empty dict:
 
 .. code:: python
 
     >>> Schema({int:int}).is_valid({})
     False
 
-To do that, you need ``Schema(Or({int:int}, {}))``. This is unlike what happens with
+To do that, you need ``Schema({Optional(int):int})``. This is differents for lists
 lists, where ``Schema([int]).is_valid([])`` will return True.
 
+You can mark a key as clean, meaning its value will be discarded:
 
-**schema** has classes ``And`` and ``Or`` that help validating several schemas
-for the same data:
+.. code:: python
+
+    >>> from schema import Clean
+    >>> Schema({Clean('id'): int,
+    ...         'name': str}).validate({'id': 1234, 'name': 'Eve'})
+    {'name': 'Eve'}
+
+``Clean`` and ``Optional`` can be combined together to discard useless values
+
+.. code:: python
+
+    >>> from schema import Clean, Optional
+    >>> Schema({Clean(str): None,
+    ...         Optional(str): int}).validate({'key1': 3, 'key2': None})
+    {'key1': 3}
+
+Avoid using ``Clean`` with required keys:
+
+    >>> from schema import Clean
+    >>> Schema({Clean('name'): None,
+    ...         'name': str}).validate({'name': None})
+    Traceback (most recent call last):
+    ...
+    SchemaMissingKeyError: Missing key: 'name'
+
+Logic expressions
+~~~~~~~~~~~~~~~~~
+
+**schema** has classes ``And``, ``Or`` and ``Not`` that help validating
+several schemas for the same data:
 
 .. code:: python
 
@@ -305,6 +336,11 @@ for the same data:
 
     >>> Schema(And(Or(int, float), lambda x: x > 0)).validate(3.1415)
     3.1415
+
+    >>> And(str, Not('admin')).validate('admin')
+    Traceback (most recent call last):
+    ...
+    SchemaForbiddenValueError: 'admin' matches forbidden value 'admin'
 
 In a dictionary, you can also combine two keys in a "one or the other" manner. To do
 so, use the `Or` class as a key:
@@ -325,8 +361,9 @@ so, use the `Or` class as a key:
 
 Hooks
 ~~~~~~~~~~
-You can define hooks which are functions that are executed whenever a valid key:value is found. 
-The `Forbidden` class is an example of this.
+You can define hooks to have specific behavior when validating key:value.
+We have already seen ``Optional`` and ``Clean`` hooks.
+The `Forbidden` class is another example of this.
 
 You can mark a key as forbidden as follows:
 
@@ -359,29 +396,39 @@ This means we can do that:
     ...
     SchemaForbiddenKeyError: Forbidden key encountered: 'age' in {'age': 50}
 
-You can also define your own hooks. The following hook will call `_my_function` if `key` is encountered.
+To define you own hooks, you can pass a handler function. The following hook will
+call `_my_function` if `key` is encountered.
 
 .. code:: python
 
     from schema import Hook
-    def _my_function(key, scope, error):
-        print(key, scope, error)
+    def _my_function(key, value, *args):
+        print(key, value)
 
     Hook("key", handler=_my_function)
 
-Here's an example where a `Deprecated` class is added to log warnings whenever a key is encountered:
+You can also inherit the ``Hook`` class. Here's an example where a `Deprecated` class is added to log warnings whenever a key is encountered:
 
 .. code:: python
 
     from schema import Hook, Schema
     class Deprecated(Hook):
-        def __init__(self, *args, **kwargs):
-            kwargs["handler"] = lambda key, *args: logging.warn(f"`{key}` is deprecated. " + (self._error or ""))
-            super(Deprecated, self).__init__(*args, **kwargs)
+
+        def handle(self, key, *args):
+            logging.warn(f"`{key}` is deprecated. " + (self._error or ""))
 
     Schema({Deprecated("test", "custom error message."): object}, ignore_extra_keys=True).validate({"test": "value"})
     ...
     WARNING: `test` is deprecated. custom error message.
+
+Hooks have much more possibilities:
+
+- ``handle(self, key, value, new, data)``: Called when the key and the value matches. Takes the transformed key, the transformed value, the new dict being built, and the data being validated. It can edit ``new``, and return ``None`` to continue matching the key with other schemas, ``True`` to add the key and the value to ``new``, and ``False`` to discard the key.
+- ``handle(self, key, value, new, data)``: Called when the key matches but not the value. Takes the transformed key, the error raised, the new dict being built, and the data being validated. It can edit ``new``, and return ``None`` to continue matching the key with other schemas, ``True`` to add to raise the ``error``, and ``False`` to discard the key.
+- ``priority``: The priority of this key, lowest number is called first. You can use ``COMPARABLE``, ``CALLABLE``, ``VALIDATOR``, ``TYPE``, ``DICT`` and ``ITERABLE`` constants. It can be a function.
+- ``required``: If the key is required, default to ``False``,
+- ``default``: The default value if the key hasn't been met, can be a function.
+- ``reset``: A function to call once the dict has been matched, for extra validation.
 
 Extra Keys
 ~~~~~~~~~~
@@ -498,9 +545,10 @@ converted ``'3'`` to ``int``.
 
 (Beta feature) Generating JSON schema
 -------------------------------------------------------------------------------
-You can also generate standard `draft-07 JSON schema <https://json-schema.org/>`_ from a dict `Schema`.
-This can be used to add word completion and validation directly in code editors.
-Here's an example: 
+
+You can also generate standard `draft-07 JSON schema <https://json-schema.org/>`_
+or `Open API schema <https://swagger.io/specification/#schemaObject>`_
+from a `Schema`.
 
 .. code:: python
 
@@ -521,7 +569,6 @@ Here's an example:
                 "properties": {
                     "other": {"type": "string"}
                 },
-                "required": [],
                 "additionalProperties":false
             }
         },
@@ -534,10 +581,32 @@ Here's an example:
         "$schema":"http://json-schema.org/draft-07/schema#"
     }
 
-Please note that this is a beta feature. Some JSON schema features are not implemented. Some caveats:
+Please note that this is a beta feature, and some schema won't be rendered,
+or will be illformed. In particular ``Use``  will never be rendered.
+However, many optimizations are performed to compact the schema.
 
-- There are no object references, items of type `object` are always fully rendered
-- Some JSON schema types are not implemented. In those cases, an empty dict will be rendered.
-  This disables all validation for the item.
-- Validations other than type are not implemented. This includes features such as integers'
-  minimum and maximum or arrays' minItems
+By default, JSON schema and Open API cross-compatible schemas are generated. However, it is possible to request a more specific schema.
+
+.. code:: python
+
+    >>> from schema import Or
+    >>> s = Or(str, int, bool, None)
+
+    >>> s.json_schema(target='json_schema')
+    {'type': ['boolean', 'integer', 'null', 'string']}
+
+    >>> s.json_schema(target='openapi')
+    {'anyOf': [{'type': 'boolean'}, {'type': 'integer'}, {'type': 'string'}],
+ 'nullable': True}
+
+It is possible to precise the JSON schema of any `Schema`:
+
+    >>> from schema import And, Use
+    >>> s = And(str, Use(lambda x: len(x) <= 10,
+    ...                  json_schema={
+    ...                               'type': 'string',
+    ...                               'maxLength': 10,
+    ...                  }))
+    {'type': 'string', 'maxLength': 10}
+
+Note that the two schemas have been compressed together.
